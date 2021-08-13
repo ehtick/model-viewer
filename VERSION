@@ -1,0 +1,5 @@
+commit 304d37cda07413067c032972b1bbe0c7398f8afe
+Author: Emmett Lalish <elalish@google.com>
+Date:   Fri Aug 13 13:59:34 2021 -0700
+
+    added umd-min version (#2696)
