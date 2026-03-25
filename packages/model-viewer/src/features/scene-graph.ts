@@ -14,7 +14,7 @@
  */
 
 import {property} from 'lit/decorators.js';
-import {CanvasTexture, RepeatWrapping, SRGBColorSpace, Texture, VideoTexture} from 'three';
+import {CanvasTexture, Object3D, RepeatWrapping, SRGBColorSpace, Texture, VideoTexture} from 'three';
 import {GLTFExporter, GLTFExporterOptions} from 'three/examples/jsm/exporters/GLTFExporter.js';
 
 import ModelViewerElementBase, {$needsRender, $onModelLoad, $progressTracker, $renderer, $scene} from '../model-viewer-base.js';
@@ -33,6 +33,7 @@ import {Texture as ModelViewerTexture} from './scene-graph/texture.js';
 export const $currentGLTF = Symbol('currentGLTF');
 export const $originalGltfJson = Symbol('originalGltfJson');
 export const $model = Symbol('model');
+export const $extraModels = Symbol('extraModels');
 const $getOnUpdateMethod = Symbol('getOnUpdateMethod');
 const $buildTexture = Symbol('buildTexture');
 
@@ -44,6 +45,7 @@ interface SceneExportOptions {
 
 export interface SceneGraphInterface {
   readonly model?: Model;
+  readonly extraModels: Model[];
   variantName: string|null;
   readonly availableVariants: string[];
   orientation: string;
@@ -73,6 +75,7 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
     ModelViewerElement: T): Constructor<SceneGraphInterface>&T => {
   class SceneGraphModelViewerElement extends ModelViewerElement {
     protected[$model]: Model|undefined = undefined;
+    protected[$extraModels]: Model[] = [];
     protected[$currentGLTF]: ModelViewerGLTFInstance|null = null;
     private[$originalGltfJson]: GLTF|null = null;
 
@@ -88,6 +91,11 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
     /** @export */
     get model() {
       return this[$model];
+    }
+
+    /** @export */
+    get extraModels() {
+      return this[$extraModels];
     }
 
     get availableVariants() {
@@ -203,7 +211,8 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
     [$onModelLoad]() {
       super[$onModelLoad]();
 
-      const {currentGLTF} = this[$scene];
+      const {currentGLTFs} = this[$scene];
+      const currentGLTF = currentGLTFs.length > 0 ? currentGLTFs[0] : null;
 
       if (currentGLTF != null) {
         const {correlatedSceneGraph} = currentGLTF;
@@ -221,6 +230,24 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
 
         if ('variants' in currentGLTF.userData) {
           this.requestUpdate('variantName');
+        }
+      }
+
+      this[$extraModels] = [];
+      const extraNodes = Array.from(this.querySelectorAll('extra-model')) as
+          Array<import('./extra-model.js').ExtraModelElement>;
+
+      for (let i = 1; i < currentGLTFs.length; i++) {
+        const gltf = currentGLTFs[i];
+        if (gltf != null && gltf.correlatedSceneGraph != null) {
+          const modelWrapper =
+              new Model(gltf.correlatedSceneGraph, this[$getOnUpdateMethod]());
+          this[$extraModels].push(modelWrapper);
+
+          // Link back to light-dom DOM node!
+          if (extraNodes[i - 1]) {
+            extraNodes[i - 1].model = modelWrapper;
+          }
         }
       }
 
@@ -260,9 +287,26 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
                 .register(
                     (writer: any) =>
                         new GLTFExporterMaterialsVariantsExtension(writer));
+        let exportTarget: Object3D;
+        if (scene.models.length > 1) {
+          exportTarget = new Object3D();
+          for (const m of scene.models) {
+            exportTarget.add(m);
+          }
+        } else {
+          exportTarget = scene.models[0];
+        }
+
         exporter.parse(
-            scene.model,
+            exportTarget,
             (gltf: object) => {
+              if (scene.models.length > 1) {
+                for (const m of scene.models) {
+                  scene.target.add(m);
+                }
+              } else {
+                scene.target.add(scene.models[0]);
+              }
               return resolve(new Blob(
                   [opts.binary ? gltf as Blob : JSON.stringify(gltf)], {
                     type: opts.binary ? 'application/octet-stream' :
@@ -281,10 +325,6 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
     }
 
     materialFromPoint(pixelX: number, pixelY: number): Material|null {
-      const model = this[$model];
-      if (model == null) {
-        return null;
-      }
       const scene = this[$scene];
       const ndcCoords = scene.getNDC(pixelX, pixelY);
       const hit = scene.hitFromPoint(ndcCoords);
@@ -292,7 +332,20 @@ export const SceneGraphMixin = <T extends Constructor<ModelViewerElementBase>>(
         return null;
       }
 
-      return model[$materialFromPoint](hit);
+      const model = this[$model];
+      if (model != null) {
+        const material = model[$materialFromPoint](hit);
+        if (material != null)
+          return material;
+      }
+
+      for (const extraModel of this[$extraModels]) {
+        const extraMaterial = extraModel[$materialFromPoint](hit);
+        if (extraMaterial != null)
+          return extraMaterial;
+      }
+
+      return null;
     }
   }
 
